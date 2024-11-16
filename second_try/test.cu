@@ -1,80 +1,71 @@
-#include<iostream>
+#include <iostream>
+#include <cuda_runtime.h>
 
-// 矩阵类型，行优先，M(row, col) = *(M.elements + row * M.width + col)
-struct Matrix
-{
-    int width;
-    int height;
-    float *elements;
-};
+// 矩阵乘法的CUDA核函数
+__global__ void matrixMulKernel(float* A, float* B, float* C, int N) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-// 获取矩阵A的(row, col)元素
-__device__ float getElement(Matrix *A, int row, int col)
-{
-	return A->elements[row * A->width + col];
+    if (row < N && col < N) {
+        float sum = 0.0f;
+        for (int k = 0; k < N; ++k) {
+            sum += A[row * N + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
 }
 
-// 为矩阵A的(row, col)元素赋值
-__device__ void setElement(Matrix *A, int row, int col, float value)
-{
-	A->elements[row * A->width + col] = value;
-}
+int main() {
+    const int N = 1024;  // 矩阵的大小
+    size_t size = N * N * sizeof(float);
 
-// 矩阵相乘kernel，2-D，每个线程计算一个元素
-__global__ void matMulKernel(Matrix *A, Matrix *B, Matrix *C)
-{
-	float Cvalue = 0.0;
-	int row = threadIdx.y + blockIdx.y * blockDim.y;
-	int col = threadIdx.x + blockIdx.x * blockDim.x;
-	for (int i = 0; i < A->width; ++i)
-	{
-		Cvalue += getElement(A, row, i) * getElement(B, i, col);
-	}
-	setElement(C, row, col, Cvalue);
-}
+    // 分配主机内存
+    float* h_A = (float*)malloc(size);
+    float* h_B = (float*)malloc(size);
+    float* h_C = (float*)malloc(size);
 
-int main()
-{
-    int width = 1 << 10;
-    int height = 1 << 10;
-    Matrix *A, *B, *C;
-    // 申请托管内存
-    cudaMallocManaged((void**)&A, sizeof(Matrix));
-    cudaMallocManaged((void**)&B, sizeof(Matrix));
-    cudaMallocManaged((void**)&C, sizeof(Matrix));
-    int nBytes = width * height * sizeof(float);
-    cudaMallocManaged((void**)&A->elements, nBytes);
-    cudaMallocManaged((void**)&B->elements, nBytes);
-    cudaMallocManaged((void**)&C->elements, nBytes);
-
-    // 初始化数据
-    A->height = height;
-    A->width = width;
-    B->height = height;
-    B->width = width;
-    C->height = height;
-    C->width = width;
-    for (int i = 0; i < width * height; ++i)
-    {
-        A->elements[i] = 1.0;
-        B->elements[i] = 2.0;
+    // 初始化矩阵A和B
+    for (int i = 0; i < N * N; ++i) {
+        h_A[i] = static_cast<float>(rand()) / RAND_MAX;
+        h_B[i] = static_cast<float>(rand()) / RAND_MAX;
     }
 
-    // 定义kernel的执行配置
-    dim3 blockSize(32, 32);
-    dim3 gridSize((width + blockSize.x - 1) / blockSize.x,
-        (height + blockSize.y - 1) / blockSize.y);
-    // 执行kernel
-    matMulKernel << < gridSize, blockSize >> >(A, B, C);
+    // 分配设备内存
+    float *d_A, *d_B, *d_C;
+    cudaMalloc(&d_A, size);
+    cudaMalloc(&d_B, size);
+    cudaMalloc(&d_C, size);
 
+    // 将数据从主机传输到设备
+    cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B, size, cudaMemcpyHostToDevice);
 
-    // 同步device 保证结果能正确访问
-    cudaDeviceSynchronize();
-    // 检查执行结果
-    float maxError = 0.0;
-    for (int i = 0; i < width * height; ++i)
-        maxError = fmax(maxError, fabs(C->elements[i] - 2 * width));
-    std::cout << "最大误差****: " << maxError << std::endl;
+    // 定义CUDA的线程块和网格大小
+    dim3 threadsPerBlock(16, 16);
+    dim3 blocksPerGrid((N + threadsPerBlock.x - 1) / threadsPerBlock.x,
+                       (N + threadsPerBlock.y - 1) / threadsPerBlock.y);
+
+    // 调用CUDA核函数
+    matrixMulKernel<<<blocksPerGrid, threadsPerBlock>>>(d_A, d_B, d_C, N);
+
+    // 将结果从设备传输回主机
+    cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
+
+    // 打印结果（仅用于验证）
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j < 10; ++j) {
+            std::cout << h_C[i * N + j] << " ";
+        }
+        std::cout << std::endl;
+    }
+
+    // 释放内存
+    free(h_A);
+    free(h_B);
+    free(h_C);
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_C);
 
     return 0;
 }
